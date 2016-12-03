@@ -1,0 +1,222 @@
+---
+title: "CKME136 Capstone"
+author: "Harry Ragunathan"
+student number: "500738775"
+
+date: "November 8, 2016"
+output: html_document
+---
+
+```{r}
+#Load data
+library(MASS)
+set.seed(500)
+dataraw = read.csv("creditcard_data.csv", header=T, skip=1, na.strings=c("NA", ""))
+```
+
+``` {r}
+#Check for missing values
+sum(is.na(data))
+```
+There are no missing values
+
+``` {r}
+#Remove id column as it is irrelevant to the calculation
+data <- subset(dataraw, select=LIMIT_BAL:default.payment.next.month)
+```
+
+``` {r}
+#Plot correlation
+library(corrplot)
+
+# clear plots
+dev.off()
+# increase outer margins
+par(mar=c(2,2,2,2))
+
+cor(data)
+corrplot(cor(data), method="ellipse")
+```
+I have decided to omit BILL_AMT variables in the random forest and decision tree models to save computation time as there appears to be next to no effect on default.payment.next.month
+
+
+I have defined the task is as such: 
+1. Create a multiclass random forest model to predict quality based on the other 11 attributes.
+2. Train the model with the training dataset.
+3. Use this model to predict the classification of quality on the testing dataset.
+4. Report on the findings and accuracy of the correct classification.
+
+```{r}
+#Split into two subsets: training and test (70%-30% split)
+ind <- sample(2, nrow(data), replace=TRUE, prob=c(0.7, 0.3))
+train.data <- data[ind==1,]
+test.data <- data[ind==2,]
+
+#normalizing data for neural network (min max method)
+maxs <- apply(data, 2, max) 
+mins <- apply(data, 2, min)
+
+scaled <- as.data.frame(scale(data, center = mins, scale = maxs - mins))
+
+index <- sample(1:nrow(data),round(0.7*nrow(data)))
+
+train_ <- scaled[index,]
+test_ <- scaled[-index,]
+```
+
+```{r}
+#Train the Random Forest model
+library(randomForest)
+
+rf <- randomForest(as.factor(default.payment.next.month) ~ LIMIT_BAL + SEX + EDUCATION + MARRIAGE + AGE + PAY_0 + PAY_2 + PAY_3 + PAY_4 + PAY_5 + PAY_6 + PAY_AMT1 + PAY_AMT2 + PAY_AMT3 + PAY_AMT4 + PAY_AMT5 + PAY_AMT6, data=train.data, ntree=81, proximity=T)
+
+print(rf)
+```
+I decided to use 81 trees as too many trees causes the computation time to take too long and has minimal impact on the accuracy of the predictions, and an odd number is preferable to break ties.
+
+               Type of random forest: classification
+                     Number of trees: 81
+No. of variables tried at each split: 4
+
+        OOB estimate of  error rate: 18.48%
+Confusion matrix:
+      0    1 class.error
+0 15415  978  0.05965961
+1  2902 1704  0.63004776
+  
+  prediction accuracy = ((15415+1704)/20999) x 100% = 81.5%
+
+```{r}
+#Exploring the Random Forest model
+
+#clear plots
+dev.off()
+
+plot(rf, main="")
+importance(rf)
+varImpPlot(rf, main="Importance of Variables")
+```
+
+```{r}
+#Test the Random Forest model
+rfPred <- predict(rf, newdata = test.data)
+table(rfPred, test.data$default.payment.next.month)
+```
+rfPred    0    1
+     0 6573 1266
+     1  398  764
+       
+  prediction accuracy = ((6573+764)/9001) x 100% = 81.5%
+
+```{r}
+#Train the Neural Network model
+library(nnet)
+
+nn <- nnet(default.payment.next.month ~ ., data=train_, size=c(12),linout=T)
+
+# clear plots
+dev.off()
+# plot neural network
+library(devtools)
+source_url('https://gist.githubusercontent.com/fawda123/7471137/raw/466c1474d0a505ff044412703516c34f1a4684a5/nnet_plot_update.r')
+
+plot.nnet(nn, main="Neural Network of Training Data")
+
+nnPred <- predict(nn, newdata=train_, type="raw")
+
+nn1 <- ifelse(nnPred>0.5,1,0)
+classacc <- mean(train_$default.payment.next.month == nn1)
+classacc*100
+```
+
+  Classification Accuracy = 82.3%
+
+```{r}
+#Test the Neural Network model
+nntest <- predict(nn, newdata=test_, type="raw")
+
+nn2 <- ifelse(nntest>0.5,1,0)
+
+classacctest <- mean(test_$default.payment.next.month == nn2)
+classacctest*100
+```
+
+  Classification Accuracy = 82.3%
+
+```{r}
+#Train the Decision Tree model
+library(rpart)
+library(rpart.plot)
+
+#start with a small cp
+dt <- rpart(as.factor(default.payment.next.month) ~ LIMIT_BAL + SEX + EDUCATION + MARRIAGE + AGE + PAY_0 + PAY_2 + PAY_3 + PAY_4 + PAY_5 + PAY_6 + PAY_AMT1 + PAY_AMT2 + PAY_AMT3 + PAY_AMT4 + PAY_AMT5 + PAY_AMT6, method="class", data=train.data, control=rpart.control(cp = 0.0001))
+
+# display the results 
+printcp(dt) 
+# visualize cross-validation results 
+plotcp(dt) 
+# detailed summary of splits
+summary(dt) 
+
+# clear plots
+dev.off()
+# increase outer margins
+par(mar=c(2,2,2,2))
+# plot tree 
+plot(dt, uniform=TRUE, 
+  	main="Classification Tree for Training Data")
+text(dt, use.n=TRUE, all=TRUE, cex=.8) # as you can see this is massively overcrowded and basically impossible to read
+
+# prune the tree
+bestcp <- dt$cptable[which.min(dt$cptable[,"xerror"]),"CP"]
+dt.pruned <- prune(dt, cp = bestcp)
+
+# display the pruned results 
+printcp(dt.pruned) 
+# visualize cross-validation results 
+plotcp(dt.pruned) 
+# detailed summary of splits
+summary(dt.pruned) 
+
+# display the pruned tree
+prp(dt.pruned, faclen = 0, cex = 0.8, extra = 1, main="Pruned Classification Tree for Training Data")
+
+dtPred <- predict(dt.pruned, newdata=train.data, type='class')
+table(dtPred, train.data$default.payment.next.month)
+```
+
+Root node error: 4606/20999 = 0.21934
+
+n= 20999 
+
+         CP nsplit rel error  xerror     xstd
+1 0.1799826      0   1.00000 1.00000 0.013019
+2 0.0047764      1   0.82002 0.82002 0.012083
+3 0.0032566      3   0.81046 0.82002 0.012083
+4 0.0027139      4   0.80721 0.81937 0.012080
+5 0.0015198      6   0.80178 0.81719 0.012067
+6 0.0011579      8   0.79874 0.81633 0.012062
+7 0.0010855     16   0.78789 0.81350 0.012046
+
+dtPred     0     1
+     0 15624  2860
+     1   769  1746
+     
+  prediction accuracy = 100 - ((0.21934 x 0.78789) x 100%) = 82.7%
+  
+  or
+  
+  prediction accuracy = 100 - ((15624+1746)/20999) x 100% = 82.7%
+
+```{r}
+#Test the Decision Tree model
+dtPredTest <- predict(dt.pruned, newdata=test.data, type='class')
+table(dtPredTest, test.data$default.payment.next.month)
+```
+
+dtPredTest    0    1
+         0 6598 1280
+         1  373  750
+   
+  prediction accuracy = ((6598+750)/9001) x 100% = 81.6%
+  
